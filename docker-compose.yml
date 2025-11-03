@@ -1,0 +1,30 @@
+version: "3.20"
+
+services:
+  mongo:
+    image: mongo:6
+    container_name: mongo_shortUrl
+    restart: always
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+  
+  short-url:
+    build:
+      context: ./shortUrl
+      dockerfile: Dockerfile
+    container_name: short-url
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      - NODE_ENV=production
+      - MONGO_URL=mongodb://mongo:27017/shortUrl
+    env_file:
+      - ./shortUrl/.env
+    depends_on:
+      - mongo
+
+volumes:
+  mongo_data:
