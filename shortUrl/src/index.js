@@ -10,7 +10,7 @@ app.use(express.json());
 app.use("/api/v1/", urlRouter);
 
 app.get("/", (req, res) => {
-  res.send("Hello! Your code is working just checking h");
+  res.send("Hello! Your code is working just checking");
 });
 
 // Connect to DB first, then start server
