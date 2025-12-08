@@ -6,7 +6,7 @@ module.exports = {
       script: "./src/index.js",
       env: {
         MONGO_DB: process.env.MONGO_DB,
-        PORT: process.env.PORT,
+        NODE_PORT: process.env.NODE_PORT,
       }
     }
   ]
