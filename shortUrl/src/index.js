@@ -1,16 +1,23 @@
-const express= require("express");
-const dotenv=require("dotenv");
+const express = require("express");
+const dotenv = require("dotenv");
 dotenv.config();
-const connectDB=require("./configs/database");
-const urlRouter=require("./routes/urlRouter");
-const app=express();
+
+const connectDB = require("./configs/database");
+const urlRouter = require("./routes/urlRouter");
+
+const app = express();
 app.use(express.json());
-app.use("/api/v1/",urlRouter);
+app.use("/api/v1/", urlRouter);
+
 app.get("/", (req, res) => {
-    res.send("Hello Your code is working");
+  res.send("Hello! Your code is working");
 });
 
-app.listen(process.env.NODE_PORT, ()=>{
-    console.log("Server is running on Port",`${process.env.NODE_PORT}`)
-    connectDB();
-})
+// Connect to DB first, then start server
+const PORT = process.env.NODE_PORT || 5000;
+
+connectDB().then(() => {
+  app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+  });
+});
