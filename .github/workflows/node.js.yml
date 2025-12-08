@@ -1,4 +1,4 @@
-name: Deploy to EC2
+name: Deploy to EC2 via Docker
 on:
   push:
     branches: [main]
@@ -6,172 +6,100 @@ on:
 
 jobs:
   build:
-    name: Build Application
+    name: Build Docker Image
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "18.20.8"
-          cache: "npm"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
 
-      - name: Install dependencies
-        run: npm install
+      - name: Build Docker image
+        run: |
+          docker build -t shorturl-app .
 
-      - name: Create deployment package (without node_modules)
+      - name: Save Docker image as tar
         run: |
           mkdir -p deploy
-          cp -r src deploy/      # Keep src folder
-          cp package*.json deploy/
-          cp ecosystem.config.cjs deploy/
-          # Copy .env.example if exists
-          [ -f .env.example ] && cp .env.example deploy/ || echo "No .env.example found"
-          tar -czf deploy.tar.gz -C deploy .
+          docker save shorturl-app | gzip > deploy/shorturl-app.tar.gz
 
-      - name: Upload build artifact
+      - name: Upload Docker image artifact
         uses: actions/upload-artifact@v4
         with:
-          name: deployment-package
-          path: deploy.tar.gz
+          name: docker-image
+          path: deploy/shorturl-app.tar.gz
           retention-days: 1
 
   deploy:
-    name: Deploy to EC2
+    name: Deploy Docker Image to EC2
     needs: build
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download build artifact
+      - name: Download Docker image artifact
         uses: actions/download-artifact@v4
         with:
-          name: deployment-package
+          name: docker-image
 
-      - name: Deploy to EC2 via SSH
+      - name: Deploy via SSH
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
           SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
         run: |
+          # Save SSH key
           echo "$SSH_PRIVATE_KEY" > private_key.pem
           chmod 600 private_key.pem
 
-          # Copy deployment package to EC2
+          # Copy Docker image tar to EC2
           scp -i private_key.pem -o StrictHostKeyChecking=no \
-            deploy.tar.gz ${EC2_USERNAME}@${EC2_HOST}:/tmp/
+            deploy/shorturl-app.tar.gz ${EC2_USERNAME}@${EC2_HOST}:/tmp/
 
-          # SSH into EC2 and deploy
+          # SSH into EC2 to load and run Docker container
           ssh -i private_key.pem -o StrictHostKeyChecking=no \
             ${EC2_USERNAME}@${EC2_HOST} << 'EOF'
             
-            cd /var/www/express-app
+            # Load Docker image
+            docker load < /tmp/shorturl-app.tar.gz
 
-            # Fix ownership
-            sudo chown -R $USER:$USER /var/www/express-app
-            
-            # Backup current version
-            if [ -d "src" ]; then
-              timestamp=$(date +%Y%m%d_%H%M%S)
-              mkdir -p backups
-              tar -czf backups/backup_${timestamp}.tar.gz src package.json ecosystem.config.cjs .env 2>/dev/null || true
-              # Keep only last 5 backups
-              ls -t backups/backup_*.tar.gz 2>/dev/null | tail -n +6 | xargs -r rm
+            # Stop and remove previous container if exists
+            if [ "$(docker ps -q -f name=shorturl-app)" ]; then
+              docker stop shorturl-app
+              docker rm shorturl-app
             fi
-            
-            # Extract new version
-            echo "Extracting new deployment package..."
-            tar --overwrite -xzf /tmp/deploy.tar.gz -C /var/www/express-app
-            rm /tmp/deploy.tar.gz
 
-            # Fix ownership after extraction
-            sudo chown -R $USER:$USER /var/www/express-app
-            
-            # Install production dependencies
-            echo "Installing production dependencies..."
-            npm install --production
-            
-            # Create .env file if needed
-            if [ ! -f .env ]; then
-              echo "Creating default .env file..."
-              echo "NODE_ENV=production" > .env
-              echo "PORT=8000" >> .env
-            fi
-            
-            # Create logs directory
-            mkdir -p logs
-            
-            # Zero-downtime reload with PM2
-            if pm2 describe express-app > /dev/null 2>&1; then
-              echo "Reloading PM2 app (zero-downtime)..."
-              sudo pm2 reload ecosystem.config.cjs --update-env
-            else
-              echo "Starting new PM2 process..."
-              sudo pm2 start ecosystem.config.cjs
-            fi
-            
-            # Save PM2 process list
-            sudo pm2 save
+            # Run new container
+            docker run -d \
+              --name shorturl-app \
+              -p 8000:8000 \
+              --restart unless-stopped \
+              shorturl-app
+
+            # Cleanup
+            rm /tmp/shorturl-app.tar.gz
           EOF
 
-          # Cleanup
+          # Cleanup SSH key
           rm private_key.pem
 
-      - name: Verify deployment
+      - name: Verify Deployment
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
-          echo "Waiting for application to start..."
+          echo "Waiting for app to start..."
           sleep 10
 
           for i in {1..5}; do
-            echo "Attempt $i of 5..."
-            response=$(curl -s -o /dev/null -w "%{http_code}" http://${EC2_HOST} 2>/dev/null || echo "000")
-            
+            response=$(curl -s -o /dev/null -w "%{http_code}" http://${EC2_HOST}:8000 || echo "000")
             if [ "$response" = "200" ] || [ "$response" = "301" ] || [ "$response" = "302" ]; then
-              echo "✅ Deployment successful! App is responding with status: $response"
+              echo "✅ Deployment successful! App responded with status: $response"
               exit 0
             fi
-            
             echo "Got response: $response, waiting 5 seconds..."
             sleep 5
           done
 
-          echo "❌ Deployment verification failed after 5 attempts"
-          echo "Please check PM2 logs on the server"
+          echo "❌ Deployment failed"
           exit 1
-
-      - name: Rollback on failure
-        if: failure()
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
-          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
-        run: |
-          echo "Attempting rollback..."
-
-          echo "$SSH_PRIVATE_KEY" > private_key.pem
-          chmod 600 private_key.pem
-
-          ssh -i private_key.pem -o StrictHostKeyChecking=no \
-            ${EC2_USERNAME}@${EC2_HOST} << 'EOF'
-            
-            cd /var/www/express-app
-            sudo chown -R $USER:$USER /var/www/express-app
-            
-            latest_backup=$(ls -t backups/backup_*.tar.gz 2>/dev/null | head -1)
-            
-            if [ -n "$latest_backup" ]; then
-              echo "Found backup: $latest_backup"
-              tar -xzf "$latest_backup" -C /var/www/express-app
-              npm install --production
-              pm2 reload ecosystem.config.cjs
-              echo "✅ Rolled back to previous version"
-            else
-              echo "⚠️ No backup found, cannot rollback"
-            fi
-          EOF
-
-          rm private_key.pem
