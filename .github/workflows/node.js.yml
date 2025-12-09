@@ -1,106 +1,76 @@
-name: Deploy to EC2 via Docker
+name: Deploy to EC2
+
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
-  build:
-    name: Build Docker Image
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Build Docker image from project folder
-        run: |
-          # Assuming Dockerfile is in shortURL/ and docker-compose.yml is outside
-          docker build -t shorturl-app -f shortURL/Dockerfile shortURL
-
-      - name: Save Docker image as tar
-        run: |
-          mkdir -p deploy
-          docker save shorturl-app | gzip > deploy/shorturl-app.tar.gz
-
-      - name: Upload Docker image artifact
-        uses: actions/upload-artifact@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          name: docker-image
-          path: deploy/shorturl-app.tar.gz
-          retention-days: 1
+          node-version: 18
 
-  deploy:
-    name: Deploy Docker Image to EC2
-    needs: build
-    runs-on: ubuntu-latest
+      - name: Install Dependencies
+        run: npm ci
 
-    steps:
-      - name: Download Docker image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: docker-image
+      - name: Create Deployment Package
+        run: |
+          mkdir deploy
+          cp -r * deploy/
+          cd deploy
+          rm -rf node_modules   # remove local node_modules
+          zip -r ../deploy.zip .
 
-      - name: Deploy via SSH
+      - name: Upload to EC2
         env:
+          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
-          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
         run: |
-          # Save SSH key
-          echo "$SSH_PRIVATE_KEY" > private_key.pem
-          chmod 600 private_key.pem
+          echo "$SSH_PRIVATE_KEY" > key.pem
+          chmod 600 key.pem
+          
+          scp -i key.pem -o StrictHostKeyChecking=no deploy.zip ${EC2_USERNAME}@${EC2_HOST}:/tmp/
 
-          # Copy Docker image tar to EC2
-          scp -i private_key.pem -o StrictHostKeyChecking=no \
-            deploy/shorturl-app.tar.gz ${EC2_USERNAME}@${EC2_HOST}:/tmp/
+      - name: Deploy on EC2
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+        run: |
+          echo "$SSH_PRIVATE_KEY" > key.pem
+          chmod 600 key.pem
 
-          # SSH into EC2 to load and run Docker container
-          ssh -i private_key.pem -o StrictHostKeyChecking=no \
-            ${EC2_USERNAME}@${EC2_HOST} << 'EOF'
-            
-            # Load Docker image
-            docker load < /tmp/shorturl-app.tar.gz
+          ssh -i key.pem -o StrictHostKeyChecking=no ${EC2_USERNAME}@${EC2_HOST} << 'EOF'
+            cd /home/ubuntu/shortURL
 
-            # Stop and remove previous container if exists
-            if [ "$(docker ps -q -f name=shorturl-app)" ]; then
-              docker stop shorturl-app
-              docker rm shorturl-app
-            fi
+            # Extract latest build
+            rm -rf tmp
+            mkdir tmp
+            unzip /tmp/deploy.zip -d tmp
+            rm /tmp/deploy.zip
 
-            # Run new container
-            docker run -d \
-              --name shorturl-app \
-              -p 8000:8000 \
-              --restart unless-stopped \
-              shorturl-app
+            # Install dependencies
+            cd tmp
+            npm install --production
 
-            # Cleanup
-            rm /tmp/shorturl-app.tar.gz
+            # Replace old version
+            cd ..
+            rm -rf current
+            mv tmp current
+
+            cd current
+            pm2 restart ecosystem.config.js || pm2 start ecosystem.config.js
+            pm2 save
           EOF
 
-          # Cleanup SSH key
-          rm private_key.pem
-
-      - name: Verify Deployment
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-        run: |
-          echo "Waiting for app to start..."
-          sleep 10
-
-          for i in {1..5}; do
-            response=$(curl -s -o /dev/null -w "%{http_code}" http://${EC2_HOST}:8000 || echo "000")
-            if [ "$response" = "200" ] || [ "$response" = "301" ] || [ "$response" = "302" ]; then
-              echo "✅ Deployment successful! App responded with status: $response"
-              exit 0
-            fi
-            echo "Got response: $response, waiting 5 seconds..."
-            sleep 5
-          done
-
-          echo "❌ Deployment failed"
-          exit 1
+          rm key.pem
