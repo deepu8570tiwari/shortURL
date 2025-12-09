@@ -1,76 +1,30 @@
-name: Deploy to EC2
+name: Node.js CI
 
 on:
   push:
-    branches:
-      - main
-  workflow_dispatch:
+    branches: ["main"]
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Node
+        uses: actions/setup-node@v3
         with:
           node-version: 18
 
-      - name: Install Dependencies
+      - name: Install dependencies
+        working-directory: ./shortUrl
         run: npm ci
 
-      - name: Create Deployment Package
-        run: |
-          mkdir deploy
-          cp -r * deploy/
-          cd deploy
-          rm -rf node_modules   # remove local node_modules
-          zip -r ../deploy.zip .
+      - name: Run tests
+        working-directory: ./shortUrl
+        run: npm test
 
-      - name: Upload to EC2
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
-        run: |
-          echo "$SSH_PRIVATE_KEY" > key.pem
-          chmod 600 key.pem
-          
-          scp -i key.pem -o StrictHostKeyChecking=no deploy.zip ${EC2_USERNAME}@${EC2_HOST}:/tmp/
-
-      - name: Deploy on EC2
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
-        run: |
-          echo "$SSH_PRIVATE_KEY" > key.pem
-          chmod 600 key.pem
-
-          ssh -i key.pem -o StrictHostKeyChecking=no ${EC2_USERNAME}@${EC2_HOST} << 'EOF'
-            cd /home/ubuntu/shortURL
-
-            # Extract latest build
-            rm -rf tmp
-            mkdir tmp
-            unzip /tmp/deploy.zip -d tmp
-            rm /tmp/deploy.zip
-
-            # Install dependencies
-            cd tmp
-            npm install --production
-
-            # Replace old version
-            cd ..
-            rm -rf current
-            mv tmp current
-
-            cd current
-            pm2 restart ecosystem.config.js || pm2 start ecosystem.config.js
-            pm2 save
-          EOF
-
-          rm key.pem
+      - name: Build (only if needed)
+        working-directory: ./shortUrl
+        run: npm run build
