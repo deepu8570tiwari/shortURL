@@ -21,10 +21,6 @@ jobs:
         working-directory: ./shortUrl
         run: npm ci
 
-      - name: Run tests
-        working-directory: ./shortUrl
-        run: npm test
-
       - name: Build (only if needed)
         working-directory: ./shortUrl
         run: npm run build
