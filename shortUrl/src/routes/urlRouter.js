@@ -4,4 +4,5 @@ const {createShorts,redirectTolongUrl,getAnalystics}=require("../controllers/url
 router.post("/urls",createShorts);
 router.get("/urls/:shortId",redirectTolongUrl);
 router.get("/urls/analytics/:shortId",getAnalystics);
+
 module.exports=router;
