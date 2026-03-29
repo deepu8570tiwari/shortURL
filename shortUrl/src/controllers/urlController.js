@@ -7,7 +7,6 @@ const createShorts = async (req, res) => {
     if (!url) {
       return res.status(400).json({ message: "Missing URL" });
     }
-
     if (!/^https?:\/\//i.test(url)) {
       url = `https://${url}`;
     }
