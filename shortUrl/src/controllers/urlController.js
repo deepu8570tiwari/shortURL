@@ -1,7 +1,7 @@
 const Urls=require("../models/urlModels");
 const createShorts = async (req, res) => {
   try {
-    const { nanoid } = await import("nanoid"); // dynamic import
+    const { nanoid } = await import("nanoid");
     let { url } = req.body; 
 
     if (!url) {
